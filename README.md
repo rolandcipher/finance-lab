@@ -1,58 +1,84 @@
-# Finance Lab — Simulador financiero empresarial
+# 📊 Finance Lab
 
-Aplicación demostrativa desarrollada con Python y Streamlit para explorar proyecciones financieras, flujo de caja y escenarios.
+**A transparent, editable financial planning and scenario simulator for small businesses, built with Streamlit.**
 
-## Funciones
+Enter a handful of assumptions and Finance Lab projects a monthly income statement and cash flow, compares scenarios, stress-tests the plan with Monte Carlo simulation, and exports the results as Excel, Markdown or CSV.
 
-- Panel ejecutivo con ingresos, EBITDA, margen y evolución de caja.
-- Supuestos editables desde la barra lateral.
-- Proyección mensual de resultados y flujo de caja.
-- Desfases simplificados de cobro y pago (0, 1 o 2 meses).
-- Comparación de escenarios pesimista, base y optimista.
-- Exportación de proyecciones a CSV e informe a Markdown.
+> ⚠️ **Disclaimer:** Finance Lab is an educational / demonstration tool. Its output is only as good as the assumptions you enter and does not constitute accounting, financial, legal or tax advice.
 
-## Ejecutar localmente
+---
 
-Requiere Python 3.10 o superior.
+## ✨ Features
+
+| Area | What you get |
+|---|---|
+| **Dashboard** | KPIs (revenue, EBITDA, net income, cash, funding gap, break-even, safety margin), revenue/cost/EBITDA chart, cash chart, P&L waterfall, margin trends and automatic alerts |
+| **Assumptions** | Presets (Retail SME, Professional services, SaaS, Manufacturing), grouped inputs, save / load assumptions as JSON |
+| **Projection** | Monthly income statement, cash flow and full-detail views with CSV export |
+| **Scenarios** | Editable pessimistic / base / optimistic cases, sensitivity heatmap (growth × cost) and tornado chart of the biggest cash drivers |
+| **Risk (Monte Carlo)** | Thousands of simulated paths, fan chart, probability of running out of cash, funding buffer needed to cover 95% of paths |
+| **Report** | Auto-generated executive report, downloadable as Markdown, Excel workbook or CSV |
+
+Other details: multi-currency labels (ARS, USD, EUR, GBP, BRL, MXN, CLP, COP, UYU), compact number formatting, optional monthly fixed-cost inflation, loss carry-forward, tax payment lag, one-off cash injection (loan or equity), and light/dark theme support.
+
+## 🚀 Quick start
 
 ```bash
+# 1. Clone the repository
+git clone https://github.com/<your-user>/finance-lab.git
+cd finance-lab
+
+# 2. (Recommended) create a virtual environment
 python -m venv .venv
-source .venv/bin/activate       # Linux/macOS
-# .venv\Scripts\activate      # Windows
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. Run the app
 streamlit run app.py
 ```
 
-La aplicación se abrirá normalmente en `http://localhost:8501`.
+The app opens at <http://localhost:8501>.
 
-## Publicar en Streamlit Community Cloud
+## 🧮 How the model works
 
-1. Creá un repositorio público en GitHub.
-2. Subí `app.py` y `requirements.txt` a la raíz del repositorio.
-3. Entrá en https://share.streamlit.io/ e iniciá sesión con GitHub.
-4. Elegí el repositorio, la rama y `app.py` como archivo principal.
-5. Seleccioná **Deploy**.
+1. **Revenue** grows geometrically: `revenue[t] = initial × (1 + growth)^t`.
+2. **Variable costs** are a percentage of revenue; **fixed costs** are constant, or inflate monthly if you set an inflation rate.
+3. **EBITDA** = revenue − variable costs − fixed costs; **EBT** = EBITDA − depreciation − interest.
+4. **Taxes** apply to positive EBT only; with loss carry-forward enabled, earlier losses offset later profits.
+5. **Cash timing:** collections, supplier payments and tax payments are delayed by 0, 1 or 2 whole months. Opening receivables and payables are spread evenly across the lag window.
+6. **Net cash flow** = collections − supplier payments − fixed costs − interest − taxes paid − CAPEX + cash injection. Depreciation is non-cash.
+7. **Monte Carlo** adds normally distributed noise to monthly growth and to the variable-cost ratio, then reports percentiles and shortfall probabilities.
 
-## Modelo y supuestos importantes
+### Known simplifications
 
-- Ingresos y costos se proyectan mensualmente con crecimiento compuesto.
-- Los costos variables se calculan como porcentaje de ingresos.
-- Los gastos fijos se mantienen constantes nominalmente.
-- El EBITDA se calcula como ingresos menos costos variables y gastos fijos.
-- El resultado neto estimado resta depreciación, intereses e impuestos aproximados.
-- El flujo de caja aproxima cobros y pagos desplazando ingresos y costos variables por meses completos.
-- Los saldos iniciales de cuentas por cobrar/pagar se contemplan únicamente como una aproximación inicial cuando el desfase es de un mes.
-- CAPEX se registra como salida de caja inicial, no como gasto del estado de resultados.
+No VAT, payroll taxes, seasonality, inventory, debt schedules, dividends, or separate price/volume effects. Lags are whole-month approximations.
 
-## Limitaciones
+## 🗂 Project structure
 
-Este MVP no modela inflación, IVA, estacionalidad, inventarios, nómina detallada, deuda nueva, amortizaciones de préstamos, dividendos ni variaciones separadas de precio y volumen. La tasa de impuesto es una aproximación aplicada al resultado antes de impuestos positivo. No debe utilizarse como sustituto de contabilidad, asesoramiento financiero o asesoramiento impositivo.
+```
+finance-lab/
+├── app.py                 # Streamlit app (UI + financial engine)
+├── requirements.txt
+├── .streamlit/
+│   └── config.toml        # Theme and Streamlit settings
+├── .gitignore
+└── README.md
+```
 
-## Próximas mejoras posibles
+## ☁️ Deploy for free
 
-- Importación de CSV/Excel.
-- Inflación y actualización nominal de costos.
-- Calendario de deuda y servicio de intereses.
-- Capital de trabajo más detallado.
-- Punto de equilibrio y sensibilidad de variables.
-- Exportación de informes PDF.
+1. Push this repository to GitHub.
+2. Go to [Streamlit Community Cloud](https://streamlit.io/cloud), click **New app**, and select the repository, branch and `app.py`.
+3. Click **Deploy**.
+
+## 🛠 Tech stack
+
+[Streamlit](https://streamlit.io) · [Plotly](https://plotly.com/python/) · [pandas](https://pandas.pydata.org) · [NumPy](https://numpy.org) · [openpyxl](https://openpyxl.readthedocs.io)
+
+Tested with Python 3.11+ and Streamlit 1.66.
+
+## 📄 License
+
+Released under the MIT License. Add a `LICENSE` file to your repository if you want to make this explicit.
