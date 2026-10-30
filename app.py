@@ -144,10 +144,10 @@ st.markdown(
     .block-container {{padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1440px;}}
     [data-testid="stMetric"] {{
         background: rgba(128,128,128,.07); border: 1px solid rgba(128,128,128,.18);
-        padding: 14px 16px; border-radius: 14px;
+        padding: 14px 16px; border-radius: 14px; zoom:0.8;
     }}
     [data-testid="stMetricLabel"] p {{font-size: .78rem; opacity: .75; font-weight: 600;}}
-    .eyebrow {{font-size: .2rem; letter-spacing: .14em; font-weight: 700; opacity: .65;}}
+    .eyebrow {{font-size: .72rem; letter-spacing: .14em; font-weight: 700; opacity: .65;}}
     .hero {{
         padding: 1.3rem 1.5rem; border-radius: 18px; margin: .4rem 0 1.1rem 0;
         border: 1px solid rgba(20,184,166,.35);
