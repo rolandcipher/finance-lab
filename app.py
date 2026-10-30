@@ -140,7 +140,7 @@ for _k, _v in DEFAULTS.items():
 st.markdown(
     f"""
 <style>
-    .stApp {{zoom: 0.8;}}
+    .stApp {{zoom: 1;}}
     .block-container {{padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1440px;}}
     [data-testid="stMetric"] {{
         background: rgba(128,128,128,.07); border: 1px solid rgba(128,128,128,.18);
