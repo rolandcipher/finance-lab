@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 APP_NAME = "Finance Lab"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 
 st.set_page_config(
     page_title=f"{APP_NAME} | Financial planning simulator",
@@ -60,6 +60,7 @@ DEFAULTS: dict = {
     "tax_lag": 0,
     "opening_receivables": 0.0,
     "opening_payables": 0.0,
+    "opening_tax_payable": 0.0,
     # investment, financing & tax
     "capex": 0.0,
     "depreciation": 0.0,
@@ -79,7 +80,7 @@ DEFAULTS: dict = {
 PARAM_KEYS = [
     "revenue", "growth", "variable_cost_pct", "fixed_costs", "fixed_inflation",
     "opening_cash", "collection_lag", "payment_lag", "tax_lag",
-    "opening_receivables", "opening_payables", "capex", "depreciation",
+    "opening_receivables", "opening_payables", "opening_tax_payable", "capex", "depreciation",
     "interest", "tax_pct", "loss_carryforward", "injection", "injection_month",
 ]
 ASSUMPTION_KEYS = PARAM_KEYS + ["sc_pess_growth", "sc_pess_cost", "sc_opt_growth", "sc_opt_cost"]
@@ -88,7 +89,8 @@ ASSUMPTION_KEYS = PARAM_KEYS + ["sc_pess_growth", "sc_pess_cost", "sc_opt_growth
 RANGES = {
     "revenue": (0.0, 1e13), "growth": (-20.0, 20.0), "variable_cost_pct": (0.0, 95.0),
     "fixed_costs": (0.0, 1e13), "fixed_inflation": (0.0, 10.0), "opening_cash": (0.0, 1e13),
-    "opening_receivables": (0.0, 1e13), "opening_payables": (0.0, 1e13), "capex": (0.0, 1e13),
+    "opening_receivables": (0.0, 1e13), "opening_payables": (0.0, 1e13),
+    "opening_tax_payable": (0.0, 1e13), "capex": (0.0, 1e13),
     "depreciation": (0.0, 1e13), "interest": (0.0, 1e13), "tax_pct": (0.0, 50.0),
     "injection": (0.0, 1e13), "injection_month": (1, 36),
     "sc_pess_growth": (-15.0, 15.0), "sc_pess_cost": (-30.0, 30.0),
@@ -208,7 +210,12 @@ def sanitize(raw: dict) -> dict:
             elif key == "company":
                 out[key] = str(val)[:80]
             elif isinstance(default, bool):
-                out[key] = bool(val)
+                if isinstance(val, bool):
+                    out[key] = val
+                elif isinstance(val, str) and val.lower() in ("true", "false"):
+                    out[key] = val.lower() == "true"
+                else:
+                    continue
             elif key == "injection_month":
                 lo, hi = RANGES[key]
                 out[key] = int(min(max(int(val), lo), hi))
@@ -275,6 +282,8 @@ with st.sidebar:
                         key="opening_receivables")
         st.number_input("Opening accounts payable", min_value=0.0, step=100_000.0, format="%.0f",
                         key="opening_payables")
+        st.number_input("Opening taxes payable", min_value=0.0, step=100_000.0, format="%.0f",
+                        key="opening_tax_payable")
 
     with st.expander("Investment, financing & tax"):
         st.number_input("Initial investment (CAPEX)", min_value=0.0, step=100_000.0, format="%.0f", key="capex")
@@ -303,11 +312,24 @@ def _delay(x: np.ndarray, lag: int) -> np.ndarray:
     return out
 
 
-def simulate(p: dict, growth: np.ndarray, cost_frac: np.ndarray) -> dict[str, np.ndarray]:
-    """Monthly accrual + cash model.
+def _opening_balance_schedule(balance: float, lag: int, n: int) -> np.ndarray:
+    """Settle an opening balance over its selected settlement window."""
+    schedule = np.zeros(n)
+    if balance <= 0 or n == 0:
+        return schedule
+    if lag == 0:
+        schedule[0] = balance
+    else:
+        k = min(lag, n)
+        schedule[:k] = balance / lag
+    return schedule
 
-    growth     : (S, N) monthly revenue growth in %
-    cost_frac  : (S, N) variable costs as a fraction of revenue
+
+def simulate(p: dict, growth: np.ndarray, cost_frac: np.ndarray) -> dict[str, np.ndarray]:
+    """Monthly accrual + cash model with working-capital roll-forward.
+
+    growth    : (S, N) monthly revenue growth in %
+    cost_frac : (S, N) variable costs as a fraction of revenue
     Returns a dict of (S, N) arrays. S = 1 for a deterministic run.
     """
     S, N = growth.shape
@@ -324,7 +346,7 @@ def simulate(p: dict, growth: np.ndarray, cost_frac: np.ndarray) -> dict[str, np
     ebitda = revenue - variable_costs - fixed_costs
     ebt = ebitda - depreciation - interest
 
-    # Taxes, with optional loss carry-forward.
+    # Accrual taxes, with optional loss carry-forward.
     taxes = np.zeros((S, N))
     loss_pool = np.zeros(S)
     rate = p["tax_pct"] / 100
@@ -337,43 +359,111 @@ def simulate(p: dict, growth: np.ndarray, cost_frac: np.ndarray) -> dict[str, np
         taxes[:, i] = profit * rate
     net_income = ebt - taxes
 
-    # Cash timing. Opening balances are collected / paid evenly over the lag window.
-    collections = _delay(revenue, p["collection_lag"])
-    if p["collection_lag"] > 0:
-        k = min(p["collection_lag"], N)
-        collections[:, :k] += p["opening_receivables"] / p["collection_lag"]
-    supplier_payments = _delay(variable_costs, p["payment_lag"])
-    if p["payment_lag"] > 0:
-        k = min(p["payment_lag"], N)
-        supplier_payments[:, :k] += p["opening_payables"] / p["payment_lag"]
-    taxes_paid = _delay(taxes, p["tax_lag"])
+    # Cash timing and opening working-capital balances.
+    collection_lag = int(p["collection_lag"])
+    payment_lag = int(p["payment_lag"])
+    tax_lag = int(p["tax_lag"])
+    collections = _delay(revenue, collection_lag)
+    supplier_payments = _delay(variable_costs, payment_lag)
+    taxes_paid = _delay(taxes, tax_lag)
+
+    opening_receivables = _opening_balance_schedule(
+        float(p["opening_receivables"]), collection_lag, N
+    )
+    opening_payables = _opening_balance_schedule(
+        float(p["opening_payables"]), payment_lag, N
+    )
+    opening_tax_payable = _opening_balance_schedule(
+        float(p["opening_tax_payable"]), tax_lag, N
+    )
+    collections += opening_receivables[None, :]
+    supplier_payments += opening_payables[None, :]
+    taxes_paid += opening_tax_payable[None, :]
+
+    # Closing balances: opening balance + accruals - settlements.
+    receivables = float(p["opening_receivables"]) + np.cumsum(revenue - collections, axis=1)
+    payables = float(p["opening_payables"]) + np.cumsum(variable_costs - supplier_payments, axis=1)
+    tax_payable = float(p["opening_tax_payable"]) + np.cumsum(taxes - taxes_paid, axis=1)
+    net_working_capital = receivables - payables - tax_payable
+    opening_nwc = (
+        float(p["opening_receivables"])
+        - float(p["opening_payables"])
+        - float(p["opening_tax_payable"])
+    )
+    change_nwc = np.diff(
+        np.concatenate(
+            [np.full((S, 1), opening_nwc), net_working_capital], axis=1
+        ),
+        axis=1,
+    )
+
+    # Direct and indirect operating cash flow should reconcile.
+    operating_cash_flow = (
+        collections - supplier_payments - fixed_costs - interest - taxes_paid
+    )
+    operating_cash_flow_indirect = net_income + depreciation - change_nwc
+    cash_flow_reconciliation = operating_cash_flow - operating_cash_flow_indirect
 
     capex = np.zeros((S, N))
     capex[:, 0] = p["capex"]
+    investing_cash_flow = -capex
     funding = np.zeros((S, N))
     funding[:, min(int(p["injection_month"]), N) - 1] = p["injection"]
+    financing_cash_flow = funding
 
-    net_cash_flow = (collections - supplier_payments - fixed_costs - interest
-                     - taxes_paid - capex + funding)
+    net_cash_flow = (
+        operating_cash_flow + investing_cash_flow + financing_cash_flow
+    )
     closing = p["opening_cash"] + np.cumsum(net_cash_flow, axis=1)
+    net_fixed_assets = np.cumsum(capex - depreciation, axis=1)
 
     return {
         "revenue": revenue, "variable_costs": variable_costs, "fixed_costs": fixed_costs,
-        "ebitda": ebitda, "depreciation": depreciation, "interest": interest, "taxes": taxes,
-        "net_income": net_income, "collections": collections,
-        "supplier_payments": supplier_payments, "taxes_paid": taxes_paid, "capex": capex,
-        "funding": funding, "net_cash_flow": net_cash_flow,
+        "ebitda": ebitda, "depreciation": depreciation, "interest": interest,
+        "ebt": ebt, "taxes": taxes, "net_income": net_income,
+        "collections": collections, "supplier_payments": supplier_payments,
+        "taxes_paid": taxes_paid, "receivables": receivables, "payables": payables,
+        "tax_payable": tax_payable, "net_working_capital": net_working_capital,
+        "change_nwc": change_nwc, "operating_cash_flow": operating_cash_flow,
+        "operating_cash_flow_indirect": operating_cash_flow_indirect,
+        "cash_flow_reconciliation": cash_flow_reconciliation,
+        "investing_cash_flow": investing_cash_flow,
+        "financing_cash_flow": financing_cash_flow,
+        "capex": capex, "funding": funding, "net_fixed_assets": net_fixed_assets,
+        "net_cash_flow": net_cash_flow,
         "opening_cash": closing - net_cash_flow, "closing_cash": closing,
     }
 
 
 COLUMN_MAP = {
-    "revenue": "Revenue", "variable_costs": "Variable costs", "fixed_costs": "Fixed costs",
-    "ebitda": "EBITDA", "depreciation": "Depreciation", "interest": "Interest",
-    "taxes": "Estimated taxes", "net_income": "Estimated net income",
-    "collections": "Collections", "supplier_payments": "Supplier payments",
-    "taxes_paid": "Taxes paid", "capex": "CAPEX", "funding": "Cash injection",
-    "net_cash_flow": "Net cash flow", "opening_cash": "Opening cash", "closing_cash": "Closing cash",
+    "revenue": "Revenue",
+    "variable_costs": "Variable costs",
+    "fixed_costs": "Fixed costs",
+    "ebitda": "EBITDA",
+    "depreciation": "Depreciation",
+    "interest": "Interest",
+    "ebt": "Earnings before tax",
+    "taxes": "Estimated taxes",
+    "net_income": "Estimated net income",
+    "collections": "Collections",
+    "supplier_payments": "Supplier payments",
+    "taxes_paid": "Taxes paid",
+    "receivables": "Closing accounts receivable",
+    "payables": "Closing accounts payable",
+    "tax_payable": "Closing taxes payable",
+    "net_working_capital": "Net working capital",
+    "change_nwc": "Change in net working capital",
+    "operating_cash_flow": "Operating cash flow",
+    "operating_cash_flow_indirect": "Operating cash flow (indirect)",
+    "cash_flow_reconciliation": "Cash flow reconciliation difference",
+    "investing_cash_flow": "Investing cash flow",
+    "financing_cash_flow": "Financing cash flow",
+    "capex": "CAPEX",
+    "funding": "Cash injection",
+    "net_fixed_assets": "Net fixed assets",
+    "net_cash_flow": "Net cash flow",
+    "opening_cash": "Opening cash",
+    "closing_cash": "Closing cash",
 }
 
 
@@ -405,6 +495,9 @@ def compute_kpis(df: pd.DataFrame, p: dict) -> dict:
         "min_cash_month": df.loc[min_idx, "Month"],
         "first_negative": neg.iloc[0] if len(neg) else None,
         "funding_gap": max(0.0, -df["Closing cash"].min()),
+        "cash_reconciliation_error": float(
+            df["Cash flow reconciliation difference"].abs().max()
+        ),
         "breakeven": breakeven,
         "safety_margin": (p["revenue"] - breakeven) / p["revenue"] * 100
         if p["revenue"] > 0 and np.isfinite(breakeven) else np.nan,
@@ -464,6 +557,7 @@ assumption_rows = [
     ("Tax payment lag", params["tax_lag"], "months"),
     ("Opening accounts receivable", params["opening_receivables"], currency),
     ("Opening accounts payable", params["opening_payables"], currency),
+    ("Opening taxes payable", params["opening_tax_payable"], currency),
     ("Initial CAPEX", params["capex"], currency),
     ("Monthly depreciation", params["depreciation"], currency),
     ("Monthly interest expense", params["interest"], currency),
@@ -587,6 +681,17 @@ with tab_dash:
                  "Above break-even" if np.isfinite(safety) and safety >= 0 else "Below break-even",
                  delta_color="normal" if np.isfinite(safety) and safety >= 0 else "inverse")
 
+    if kpi["cash_reconciliation_error"] < 0.01:
+        st.success(
+            "Cash flow reconciliation passed: direct and indirect operating "
+            "cash flow methods agree within the model's rounding tolerance."
+        )
+    else:
+        st.error(
+            "Cash flow reconciliation failed. Review working-capital movements "
+            "and payment schedules."
+        )
+
     st.write("")
     c_left, c_right = st.columns(2)
     with c_left:
@@ -618,8 +723,8 @@ with tab_dash:
     if params["growth"] < 0:
         alerts.append(("warning", "Monthly revenue is projected to shrink. Consider the cumulative impact on liquidity."))
     if params["collection_lag"] > 0 and params["opening_receivables"] == 0:
-        alerts.append(("info", "Collection lag is above zero but opening receivables are 0, so early collections "
-                               "start from nothing. This can overstate early-month cash stress."))
+        alerts.append(("info", "There are no opening receivables. Collections from newly generated "
+                               "revenue will only begin after the selected collection lag."))
     if not alerts:
         alerts.append(("success", "No basic alerts under the current assumptions. This does not guarantee "
                                   "future solvency or profitability."))
@@ -649,8 +754,13 @@ with tab_inputs:
   Depreciation is non-cash.
             """
         )
-    st.warning("Simplifications: no VAT, payroll taxes, seasonality, inventory, new debt schedules, dividends, "
-               "or separate price / volume effects. Tax is an approximation on positive pre-tax profit.")
+    st.warning(
+        "Model limitations: no VAT, payroll taxes, inventory valuation, "
+        "seasonality, detailed debt amortization, dividends, opening fixed assets "
+        "or complete balance sheet. CAPEX and depreciation are simplified. "
+        "Interest is treated as an immediate operating cash payment. "
+        "Tax calculations are illustrative and do not replace local tax rules."
+    )
 
 # --------------------------------------------------------------------------- #
 # Projection
@@ -664,12 +774,28 @@ def style_table(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
 
 with tab_projection:
     st.subheader("Monthly projection")
-    view = st.radio("View", ["Income statement", "Cash flow", "Full detail"], horizontal=True)
+    view = st.radio(
+        "View",
+        ["Income statement", "Cash flow", "Working capital", "Full detail"],
+        horizontal=True,
+    )
     views = {
-        "Income statement": ["Month", "Revenue", "Variable costs", "Fixed costs", "EBITDA", "Depreciation",
-                             "Interest", "Estimated taxes", "Estimated net income"],
-        "Cash flow": ["Month", "Collections", "Supplier payments", "Fixed costs", "Interest", "Taxes paid",
-                      "CAPEX", "Cash injection", "Net cash flow", "Opening cash", "Closing cash"],
+        "Income statement": [
+            "Month", "Revenue", "Variable costs", "Fixed costs", "EBITDA",
+            "Depreciation", "Interest", "Earnings before tax",
+            "Estimated taxes", "Estimated net income",
+        ],
+        "Cash flow": [
+            "Month", "Collections", "Supplier payments", "Fixed costs",
+            "Interest", "Taxes paid", "Operating cash flow",
+            "Investing cash flow", "Financing cash flow", "Net cash flow",
+            "Opening cash", "Closing cash",
+        ],
+        "Working capital": [
+            "Month", "Closing accounts receivable", "Closing accounts payable",
+            "Closing taxes payable", "Net working capital",
+            "Change in net working capital",
+        ],
         "Full detail": list(base.columns),
     }
     display = base[views[view]].copy()
@@ -759,26 +885,68 @@ with tab_scenarios:
 # Monte Carlo
 # --------------------------------------------------------------------------- #
 @st.cache_data(show_spinner=False)
-def run_monte_carlo(p_items: tuple, n: int, runs: int, g_sigma: float, c_sigma: float, seed: int) -> dict:
+def run_monte_carlo(
+    p_items: tuple,
+    n: int,
+    runs: int,
+    g_sigma: float,
+    c_sigma: float,
+    seed: int,
+    cost_shock_mode: str,
+) -> dict:
     p = dict(p_items)
     rng = np.random.default_rng(seed)
+    # Independent monthly growth shocks.
     growth = p["growth"] + rng.normal(0, g_sigma, (runs, n))
-    cost = np.clip((p["variable_cost_pct"] + rng.normal(0, c_sigma, (runs, 1))) / 100, 0, 0.99)
-    res = simulate(p, growth, np.broadcast_to(cost, (runs, n)).copy())
-    return {k: res[k] for k in ("revenue", "ebitda", "closing_cash")}
+    # Cost uncertainty can be persistent or monthly.
+    if cost_shock_mode == "Persistent":
+        cost_shocks = rng.normal(0, c_sigma, (runs, 1))
+        cost_shocks = np.broadcast_to(cost_shocks, (runs, n))
+    else:
+        cost_shocks = rng.normal(0, c_sigma, (runs, n))
+    cost = np.clip(
+        (p["variable_cost_pct"] + cost_shocks) / 100,
+        0,
+        0.99,
+    )
+    res = simulate(p, growth, cost)
+    return {
+        k: res[k]
+        for k in ("revenue", "ebitda", "closing_cash")
+    }
 
 
 with tab_risk:
     st.subheader("Monte Carlo risk analysis")
-    st.write("Instead of one fixed path, simulate thousands of possible futures by adding random noise to monthly "
-             "growth and to the variable-cost ratio. Results show *ranges and probabilities*, not predictions.")
-    m1, m2, m3, m4 = st.columns(4)
+    st.write(
+        "Simulate thousands of possible futures by adding random noise to "
+        "monthly revenue growth and variable costs. Choose whether cost "
+        "uncertainty persists throughout each simulation or changes every month. "
+        "Results show ranges and probabilities, not predictions."
+    )
+    m1, m2, m3, m4, m5 = st.columns(5)
     runs = m1.select_slider("Simulations", [500, 1_000, 2_000, 5_000, 10_000], value=2_000)
     g_sigma = m2.slider("Growth volatility (pp / month)", 0.0, 10.0, 2.0, 0.5)
     c_sigma = m3.slider("Cost-ratio uncertainty (pp)", 0.0, 10.0, 2.0, 0.5)
     seed = m4.number_input("Random seed", 0, 99_999, 42, step=1)
+    cost_shock_mode = m5.selectbox(
+        "Cost uncertainty",
+        ["Persistent", "Monthly"],
+        help=(
+            "Persistent: one cost-ratio shock per simulation path. "
+            "Monthly: a new independent shock every month."
+        ),
+    )
 
-    mc = run_monte_carlo(tuple(sorted(params.items())), months, int(runs), g_sigma, c_sigma, int(seed))
+    mc = run_monte_carlo(
+        tuple(sorted(params.items())),
+        months,
+        int(runs),
+        g_sigma,
+        c_sigma,
+        int(seed),
+        cost_shock_mode,
+    )
     cash = mc["closing_cash"]
     p5, p25, p50, p75, p95 = np.percentile(cash, [5, 25, 50, 75, 95], axis=0)
     ever_negative = np.minimum.accumulate(cash, axis=1) < 0
@@ -816,8 +984,12 @@ with tab_risk:
         risk = go.Figure(go.Scatter(x=periods, y=ever_negative.mean(axis=0) * 100, mode="lines+markers",
                                     line=dict(color=RED, width=3), fill="tozeroy", fillcolor="rgba(239,68,68,.12)"))
         show(style(risk, "Probability of having run out of cash by month", height=360, ytitle="% of simulations"))
-    st.caption("Shocks are independent, normally distributed and unrelated to seasonality or macro conditions. "
-               "Treat this as a stress-test, not a forecast.")
+    st.caption(
+        "Growth and cost shocks are normally distributed and independent. "
+        "The model does not include seasonality, macroeconomic correlations "
+        "or automatic management responses. Treat results as stress tests, "
+        "not forecasts."
+    )
 
 # --------------------------------------------------------------------------- #
 # Report & exports
@@ -836,6 +1008,7 @@ def build_markdown() -> str:
         f"| Closing cash | {money(kpi['ending_cash'], compact=False)} |",
         f"| Lowest cash ({kpi['min_cash_month'].strftime('%b %Y')}) | {money(kpi['min_cash'], compact=False)} |",
         f"| Funding gap | {money(kpi['funding_gap'], compact=False)} |",
+        f"| Cash flow reconciliation error | {kpi['cash_reconciliation_error']:.4f} |",
         f"| EBITDA break-even revenue | {money(kpi['breakeven'], compact=False)} / month |",
         "", "## Scenarios", "",
         "| Scenario | Growth | Var. costs | Closing cash | Lowest cash | Cash runs out |", "|---|---|---|---|---|---|",
@@ -854,10 +1027,21 @@ def build_markdown() -> str:
     lines += ["", "## Key assumptions", "", "| Variable | Value | Unit |", "|---|---|---|"]
     for name, value, unit in assumption_rows:
         lines.append(f"| {name} | {value:,.1f} | {unit} |" if isinstance(value, float) else f"| {name} | {value} | {unit} |")
-    lines += ["", "## Scope and limitations",
-              "This is a simplified simulation. It is not accounting, financial, legal or tax advice. It does not "
-              "model inflation of revenue, VAT, seasonality, inventory, detailed payroll, new financing or working-"
-              "capital changes beyond the approximate collection and payment lags."]
+    lines += [
+        "",
+        "## Scope and limitations",
+        "This is a simplified financial planning model, not a complete accounting "
+        "system or statutory financial statement.",
+        "It includes monthly accrual-based income projections, direct and indirect "
+        "operating cash flow, simplified working-capital balances, investing and "
+        "financing cash flows, scenario analysis and probabilistic stress testing.",
+        "It does not model VAT, payroll taxes, inventory valuation, seasonality, "
+        "detailed debt amortization, dividends, opening fixed assets or a complete "
+        "balance sheet.",
+        "CAPEX is treated as an initial investment and depreciation as a fixed "
+        "monthly assumption. Interest is treated as an immediate operating cash "
+        "payment. Tax calculations are illustrative and do not replace local tax rules.",
+    ]
     return "\n".join(lines)
 
 
@@ -868,7 +1052,9 @@ def build_excel() -> bytes:
         ("Total revenue", kpi["revenue"]), ("Total EBITDA", kpi["ebitda"]),
         ("EBITDA margin (%)", kpi["margin"]), ("Estimated net income", kpi["net_income"]),
         ("Closing cash", kpi["ending_cash"]), ("Lowest cash", kpi["min_cash"]),
-        ("Funding gap", kpi["funding_gap"]), ("EBITDA break-even revenue / month", kpi["breakeven"]),
+        ("Funding gap", kpi["funding_gap"]),
+        ("Cash flow reconciliation error", kpi["cash_reconciliation_error"]),
+        ("EBITDA break-even revenue / month", kpi["breakeven"]),
     ], columns=["Metric", "Value"])
     assumptions = pd.DataFrame(assumption_rows, columns=["Assumption", "Value", "Unit"])
     assumptions["Value"] = assumptions["Value"].astype(str)
