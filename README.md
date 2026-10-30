@@ -9,6 +9,8 @@ and cash flow; compares alternative scenarios; stress-tests assumptions
 with Monte Carlo simulation; and exports results to Excel, Markdown and
 CSV.
 
+https://finance-lab-frkpyueykw57cnjt25yfyx.streamlit.app/
+
 > ⚠️ **Disclaimer:** Finance Lab is an educational and planning tool.
 > Its results depend on the assumptions entered and do not constitute
 > accounting, financial, legal or tax advice. It is not a substitute for
@@ -228,20 +230,6 @@ finance-lab/
 If you prefer the conventional `app.py` filename, rename
 `finance_lab_v2_1.py` to `app.py` and update the run/deployment command
 accordingly.
-
-------------------------------------------------------------------------
-
-## ☁️ Deploy with Streamlit Community Cloud
-
-1.  Push the repository to GitHub.
-2.  Open [Streamlit Community Cloud](https://streamlit.io/cloud).
-3.  Create a new app and select the repository and branch.
-4.  Set the app's main file path to `finance_lab_v2_1.py` (or `app.py`
-    if you renamed it).
-5.  Deploy.
-
-Keep `requirements.txt` in the repository root so the deployment
-environment can install the dependencies.
 
 ------------------------------------------------------------------------
 
